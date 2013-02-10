@@ -5,55 +5,15 @@
  *
  * @link https://github.com/iron-io/iron_mq_php
  * @link http://www.iron.io/products/mq
- * @link http://docs.iron.io/
- * @version 1.0
+ * @link http://dev.iron.io/
+ * @version 1.4.2
  * @package IronMQPHP
  * @copyright Feel free to copy, steal, take credit for, or whatever you feel like doing with this code. ;)
  */
 
-/**
- * The Http_Exception class represents an HTTP response status that is not 200 OK.
- */
-class Http_Exception extends Exception{
-    const NOT_MODIFIED = 304;
-    const BAD_REQUEST = 400;
-    const NOT_FOUND = 404;
-    const NOT_ALOWED = 405;
-    const CONFLICT = 409;
-    const PRECONDITION_FAILED = 412;
-    const INTERNAL_ERROR = 500;
-}
 
 class IronMQ_Exception extends Exception{
 
-}
-
-/**
- * The JSON_Exception class represents an failures of decoding json strings.
- */
-class JSON_Exception extends Exception {
-    public $error = null;
-    public $error_code = JSON_ERROR_NONE;
-
-    function __construct($error_code) {
-        $this->error_code = $error_code;
-        switch($error_code) {
-            case JSON_ERROR_DEPTH:
-                $this->error = 'Maximum stack depth exceeded.';
-                break;
-            case JSON_ERROR_CTRL_CHAR:
-                $this->error = "Unexpected control characted found.";
-                break;
-            case JSON_ERROR_SYNTAX:
-                $this->error = "Syntax error, malformed JSON";
-                break;
-        }
-        parent::__construct();
-    }
-
-    function __toString() {
-        return $this->error;
-    }
 }
 
 
@@ -68,30 +28,26 @@ class IronMQ_Message {
     /**
      * Create a new message.
      *
-     * @param array|string $message
-     *        An array of message properties or a string of the message body.
-     * Fields in message array:
-     * Required:
-     * - body: The message data, as a string.
-     * Optional:
+     * @param string $message
+     *        A message body
+     * @param array $properties
+     *        An array of message properties
+     * Fields in $properties array:
      * - timeout: Timeout, in seconds. After timeout, item will be placed back on queue. Defaults to 60.
      * - delay: The item will not be available on the queue until this many seconds have passed. Defaults to 0.
      * - expires_in: How long, in seconds, to keep the item on the queue before it is deleted. Defaults to 604800 (7 days). Maximum is 2592000 (30 days).
      */
-    function __construct($message) {
-        if(is_string($message)) {
-            $this->setBody($message);
-        } elseif(is_array($message)) {
-            $this->setBody($message['body']);
-            if(array_key_exists("timeout", $message)) {
-                $this->setTimeout($message['timeout']);
-            }
-            if(array_key_exists("delay", $message)) {
-                $this->setDelay($message['delay']);
-            }
-            if(array_key_exists("expires_in", $message)) {
-                $this->setExpiresIn($message['expires_in']);
-            }
+    function __construct($message, $properties = array()) {
+        $this->setBody($message);
+
+        if(array_key_exists("timeout", $properties)) {
+            $this->setTimeout($properties['timeout']);
+        }
+        if(array_key_exists("delay", $properties)) {
+            $this->setDelay($properties['delay']);
+        }
+        if(array_key_exists("expires_in", $properties)) {
+            $this->setExpiresIn($properties['expires_in']);
         }
     }
 
@@ -103,7 +59,7 @@ class IronMQ_Message {
         if(empty($body)) {
             throw new InvalidArgumentException("Please specify a body");
         } else {
-            $this->body = $body;
+            $this->body = (string) $body;
         }
     }
 
@@ -159,35 +115,20 @@ class IronMQ_Message {
     }
 }
 
-class IronMQ{
+class IronMQ extends IronCore {
 
-    //Header Constants
-    const header_user_agent = "IronMQ PHP v0.1";
-    const header_accept = "application/json";
-    const header_accept_encoding = "gzip, deflate";
-    const HTTP_OK = 200;
-    const HTTP_CREATED = 201;
-    const HTTP_ACEPTED = 202;
-
-    const POST   = 'POST';
-    const GET    = 'GET';
-    const DELETE = 'DELETE';
-
-    public  $debug_enabled = false;
-
-    private $required_config_fields = array('token','project_id');
-    private $default_values = array(
-        'protocol'    => 'http',
+    protected $client_version = '1.4.2';
+    protected $client_name    = 'iron_mq_php';
+    protected $product_name   = 'iron_mq';
+    protected $default_values = array(
+        'protocol'    => 'https',
         'host'        => 'mq-aws-us-east-1.iron.io',
-        'port'        => '80',
+        'port'        => '443',
         'api_version' => '1',
     );
 
-    private $url;
-    private $token;
-    private $api_version;
-    private $version;
-    private $project_id;
+    const LIST_QUEUES_PER_PAGE = 30;
+    const GET_MESSAGE_TIMEOUT = 60;
 
     /**
      * @param string|array $config_file_or_options
@@ -203,27 +144,15 @@ class IronMQ{
      * - port
      * - api_version
      */
-    function __construct($config_file_or_options){
-        $config = $this->getConfigData($config_file_or_options);
-        $token              = $config['token'];
-        $project_id         = $config['project_id'];
-
-        $protocol           = empty($config['protocol'])   ? $this->default_values['protocol']    : $config['protocol'];
-        $host               = empty($config['host'])       ? $this->default_values['host']        : $config['host'];
-        $port               = empty($config['port'])       ? $this->default_values['port']        : $config['port'];
-        $api_version        = empty($config['api_version'])? $this->default_values['api_version'] : $config['api_version'];
-
-        $this->url          = "$protocol://$host:$port/$api_version/";
-        $this->token        = $token;
-        $this->api_version  = $api_version;
-        $this->version      = $api_version;
-        $this->project_id   = $project_id;
+    function __construct($config_file_or_options = null){
+        $this->getConfigData($config_file_or_options);
+        $this->url = "{$this->protocol}://{$this->host}:{$this->port}/{$this->api_version}/";
     }
 
     /**
      * Switch active project
      *
-     * string @param $project_id Project ID
+     * @param string $project_id Project ID
      * @throws InvalidArgumentException
      */
     public function setProjectId($project_id) {
@@ -235,11 +164,22 @@ class IronMQ{
         }
     }
 
-    public function getQueues($page = 0){
+    /**
+     * Get list of message queues
+     *
+     * @param int $page
+     *        Zero-indexed page to view
+     * @param int $per_page
+     *        Number of queues per page
+     */
+    public function getQueues($page = 0, $per_page = self::LIST_QUEUES_PER_PAGE) {
         $url = "projects/{$this->project_id}/queues";
         $params = array();
-        if($page > 0) {
-            $params['page'] = $page;
+        if($page !== 0) {
+            $params['page'] = (int) $page;
+        }
+        if($per_page !== self::LIST_QUEUES_PER_PAGE) {
+            $params['per_page'] = (int) $per_page;
         }
         $this->setJsonHeaders();
         return self::json_decode($this->apiCall(self::GET, $url, $params));
@@ -253,9 +193,23 @@ class IronMQ{
      * @return mixed
      */
     public function getQueue($queue_name) {
-        $url = "projects/{$this->project_id}/queues/{$queue_name}";
+        $queue = rawurlencode($queue_name);
+        $url = "projects/{$this->project_id}/queues/$queue";
         $this->setJsonHeaders();
         return self::json_decode($this->apiCall(self::GET, $url));
+    }
+
+    /**
+     * Clear all messages from queue.
+     *
+     * @param string $queue_name
+     * @return mixed
+     */
+    public function clearQueue($queue_name) {
+        $queue = rawurlencode($queue_name);
+        $url = "projects/{$this->project_id}/queues/$queue/clear";
+        $this->setJsonHeaders();
+        return self::json_decode($this->apiCall(self::POST, $url));
     }
 
     /**
@@ -266,55 +220,81 @@ class IronMQ{
      * $ironmq->postMessage("test_queue", "Hello world");
      * </code>
      * <code>
-     * $ironmq->postMessage("test_queue", array(
-     *   "body" => "Test Message"
-     *   "timeout" => 120,
+     * $ironmq->postMessage("test_queue", "Test Message", array(
+     *   'timeout' => 120,
      *   'delay' => 2,
      *   'expires_in' => 2*24*3600 # 2 days
      * ));
      * </code>
      *
      * @param string $queue_name Name of the queue.
-     * @param array|string $message
+     * @param string $message
+     * @param array $properties
      * @return mixed
      */
-    public function postMessage($queue_name, $message) {
-        $msg = new IronMQ_Message($message);
+    public function postMessage($queue_name, $message, $properties = array()) {
+        $msg = new IronMQ_Message($message, $properties);
         $req = array(
             "messages" => array($msg->asArray())
         );
         $this->setCommonHeaders();
-        $url = "projects/{$this->project_id}/queues/{$queue_name}/messages";
+        $queue = rawurlencode($queue_name);
+        $url = "projects/{$this->project_id}/queues/$queue/messages";
         $res = $this->apiCall(self::POST, $url, $req);
-        return self::json_decode($res);
+        $decoded = self::json_decode($res);
+        $decoded->id = $decoded->ids[0];
+        return $decoded;
     }
 
     /**
      * Push multiple messages on the queue
      *
+     * Example:
+     * <code>
+     * $ironmq->postMessages("test_queue", array("Lorem", "Ipsum"), array(
+     *   'timeout' => 120,
+     *   'delay' => 2,
+     *   'expires_in' => 2*24*3600 # 2 days
+     * ));
+     * </code>
+     *
      * @param string $queue_name Name of the queue.
      * @param array $messages array of messages, each message same as for postMessage() method
+     * @param array $properties array of message properties, applied to each message in $messages
      * @return mixed
      */
-    public function postMessages($queue_name, $messages) {
+    public function postMessages($queue_name, $messages, $properties = array()) {
         $req = array(
             "messages" => array()
         );
         foreach($messages as $message) {
-            $msg = new IronMQ_Message($message);
+            $msg = new IronMQ_Message($message, $properties);
             array_push($req['messages'], $msg->asArray());
         }
         $this->setCommonHeaders();
-        $url = "projects/{$this->project_id}/queues/{$queue_name}/messages";
+        $queue = rawurlencode($queue_name);
+        $url = "projects/{$this->project_id}/queues/$queue/messages";
         $res = $this->apiCall(self::POST, $url, $req);
         return self::json_decode($res);
     }
 
-    public function getMessages($queue_name, $count=1) {
-        $url = "projects/{$this->project_id}/queues/{$queue_name}/messages";
+    /**
+     * Get multiplie messages from queue
+     *
+     * @param string $queue_name Queue name
+     * @param int $count
+     * @param int $timeout
+     * @return array|null array of messages or null
+     */
+    public function getMessages($queue_name, $count = 1, $timeout = self::GET_MESSAGE_TIMEOUT) {
+        $queue = rawurlencode($queue_name);
+        $url = "projects/{$this->project_id}/queues/$queue/messages";
         $params = array();
-        if($count > 1) {
-            $params['count'] = $count;
+        if($count !== 1) {
+            $params['n'] = (int) $count;
+        }
+        if($timeout !== self::GET_MESSAGE_TIMEOUT) {
+            $params['timeout'] = (int) $timeout;
         }
         $this->setJsonHeaders();
         $response = $this->apiCall(self::GET, $url, $params);
@@ -322,119 +302,172 @@ class IronMQ{
         if(count($result->messages) < 1) {
             return null;
         } else {
-            return $result;
+            return $result->messages;
         }
     }
 
-    public function getMessage($queue_name) {
-        return $this->getMessages($queue_name, 1);
+    /**
+     * Get single message from queue
+     *
+     * @param string $queue_name Queue name
+     * @param int $timeout
+     * @return mixed|null single message or null
+     */
+    public function getMessage($queue_name, $timeout = self::GET_MESSAGE_TIMEOUT) {
+        $messages = $this->getMessages($queue_name, 1, $timeout);
+        if ($messages){
+            return $messages[0];
+        }else{
+            return null;
+        }
     }
 
+    /**
+     * Delete a Message from a Queue
+     * This call will delete the message. Be sure you call this after you’re done with a message or it will be placed back on the queue.
+     *
+     * @param $queue_name
+     * @param $message_id
+     * @return mixed
+     */
     public function deleteMessage($queue_name, $message_id) {
         $this->setCommonHeaders();
-        $url = "projects/{$this->project_id}/queues/{$queue_name}/messages/{$message_id}";
+        $queue = rawurlencode($queue_name);
+        $url = "projects/{$this->project_id}/queues/$queue/messages/{$message_id}";
         return $this->apiCall(self::DELETE, $url);
     }
 
-    /* PRIVATE FUNCTIONS */
-
-    private function compiledHeaders(){
-
-        # Set default headers if no headers set.
-        if ($this->headers == null){
-            $this->setCommonHeaders();
+    /**
+     * Peek Messages on a Queue
+     * Peeking at a queue returns the next messages on the queue, but it does not reserve them.
+     *
+     * @param string $queue_name
+     * @return object|null  message or null if queue is empty
+     */
+    public function peekMessage($queue_name) {
+        $messages = $this->peekMessages($queue_name, 1);
+        if ($messages == null) {
+            return null;
+        } else {
+            return $messages[0];
         }
-
-        $headers = array();
-        foreach ($this->headers as $k => $v){
-            $headers[] = "$k: $v";
-        }
-        return $headers;
     }
-
-    private function apiCall($type, $url, $params = array()){
-        $url = "{$this->url}$url";
-
-        $s = curl_init();
-        if (! isset($params['oauth'])) {
-          $params['oauth'] = $this->token;
-        }
-        switch ($type) {
-            case self::DELETE:
-                $fullUrl = $url . '?' . http_build_query($params);
-                $this->debug('apiCall fullUrl', $fullUrl);
-                curl_setopt($s, CURLOPT_URL, $fullUrl);
-                curl_setopt($s, CURLOPT_CUSTOMREQUEST, self::DELETE);
-                break;
-            case self::POST:
-                $this->debug('apiCall url', $url);
-                curl_setopt($s, CURLOPT_URL,  $url);
-                curl_setopt($s, CURLOPT_POST, true);
-                curl_setopt($s, CURLOPT_POSTFIELDS, json_encode($params));
-                break;
-            case self::GET:
-                $fullUrl = $url . '?' . http_build_query($params);
-                $this->debug('apiCall fullUrl', $fullUrl);
-                curl_setopt($s, CURLOPT_URL, $fullUrl);
-                break;
-        }
-
-        curl_setopt($s, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($s, CURLOPT_HTTPHEADER, $this->compiledHeaders());
-        $_out = curl_exec($s);
-        $status = curl_getinfo($s, CURLINFO_HTTP_CODE);
-        curl_close($s);
-        switch ($status) {
-            case self::HTTP_OK:
-            case self::HTTP_CREATED:
-            case self::HTTP_ACEPTED:
-                $out = $_out;
-                break;
-            default:
-                throw new Http_Exception("http error: {$status} | {$_out}", $status);
-        }
-        return $out;
-    }
-
 
     /**
-     * @param array|string $config_file_or_options
-     * array of options or name of config file
-     * @return array
-     * @throws InvalidArgumentException
+     * Peek Messages on a Queue
+     * Peeking at a queue returns the next messages on the queue, but it does not reserve them.
+     *
+     * @param string $queue_name
+     * @param int $count The maximum number of messages to peek. Maximum is 100.
+     * @return array|null array of messages or null if queue is empty
      */
-    private function getConfigData($config_file_or_options){
-        if (is_string($config_file_or_options)){
-            $ini = parse_ini_file($config_file_or_options, true);
-            if ($ini === false){
-                throw new InvalidArgumentException("Config file $config_file_or_options not found");
-            }
-            if (empty($ini['iron_mq'])){
-                throw new InvalidArgumentException("Config file $config_file_or_options has no section 'iron_mq'");
-            }
-            $config =  $ini['iron_mq'];
-        }elseif(is_array($config_file_or_options)){
-            $config = $config_file_or_options;
-        }else{
-            throw new InvalidArgumentException("Wrong parameter type");
+    public function peekMessages($queue_name, $count) {
+        $queue = rawurlencode($queue_name);
+        $url = "projects/{$this->project_id}/queues/$queue/messages/peek";
+        $params = array();
+        if($count !== 1) {
+            $params['n'] = (int) $count;
         }
-        foreach ($this->required_config_fields as $field){
-            if (empty($config[$field])){
-                throw new InvalidArgumentException("Required config key missing: '$field'");
-            }
-        }
-        return $config;
+        $this->setJsonHeaders();
+        $response = self::json_decode($this->apiCall(self::GET, $url, $params));
+        return $response->messages;
     }
 
-    private function setCommonHeaders(){
-        $this->headers = array(
-            'Authorization'   => "OAuth {$this->token}",
-            'User-Agent'      => self::header_user_agent,
-            'Content-Type'    => 'application/json',
-            'Accept'          => self::header_accept,
-            'Accept-Encoding' => self::header_accept_encoding
-        );
+    /**
+     * Touch a Message on a Queue
+     * Touching a reserved message extends its timeout by the duration specified when the message was created, which is 60 seconds by default.
+     *
+     * @param string $queue_name
+     * @param string $message_id
+     * @return mixed
+     */
+    public function touchMessage($queue_name, $message_id) {
+        $this->setJsonHeaders();
+        $queue = rawurlencode($queue_name);
+        $url = "projects/{$this->project_id}/queues/$queue/messages/{$message_id}/touch";
+        return self::json_decode($this->apiCall(self::POST, $url));
     }
+
+    /**
+     * Release a Message on a Queue
+     * Releasing a reserved message unreserves the message and puts it back on the queue as if the message had timed out.
+     *
+     * @param string $queue_name
+     * @param string $message_id
+     * @return mixed
+     */
+    public function releaseMessage($queue_name, $message_id) {
+       $this->setJsonHeaders();
+       $queue = rawurlencode($queue_name);
+       $url = "projects/{$this->project_id}/queues/$queue/messages/{$message_id}/release";
+       return self::json_decode($this->apiCall(self::POST, $url));
+    }
+
+    /**
+     * Updates the queue object
+     *
+     * @param string $queue_name
+     * @param array $options Parameters to change. keys:
+     * - "subscribers" url's to subscribe to
+     * - "push_type" multicast (default) or unicast.
+     * - "retries" Number of retries. 3 by default
+     * - "retries_delay" Delay between retries. 60 (seconds) by default
+     */
+    public function updateQueue($queue_name, $options) {
+        $this->setJsonHeaders();
+        $queue = rawurlencode($queue_name);
+        $url = "projects/{$this->project_id}/queues/$queue";
+        return self::json_decode($this->apiCall(self::POST, $url, $options));
+    }
+
+    /**
+     * Add Subscriber to a Queue
+     *
+     * Example:
+     * <code>
+     * $ironmq->addSubscriber("test_queue", array("url" => "http://example.com"));
+     * </code>
+     *
+     * @param string $queue_name
+     * @param array $subscriber_hash Subscriber. keys:
+     * - "url" Subscriber url
+     * @return mixed
+     */
+    public function addSubscriber($queue_name, $subscriber_hash) {
+        $this->setJsonHeaders();
+        $queue = rawurlencode($queue_name);
+        $url = "projects/{$this->project_id}/queues/$queue/subscribers";
+        $options = array(
+            'subscribers' => array($subscriber_hash)
+        );
+        return self::json_decode($this->apiCall(self::POST, $url, $options));
+    }
+
+    /**
+     * Remove Subscriber from a Queue
+     *
+     * Example:
+     * <code>
+     * $ironmq->removeSubscriber("test_queue", array("url" => "http://example.com"));
+     * </code>
+     *
+     * @param string $queue_name
+     * @param array $subscriber_hash Subscriber. keys:
+     * - "url" Subscriber url
+     * @return mixed
+     */
+    public function removeSubscriber($queue_name, $subscriber_hash) {
+        $this->setJsonHeaders();
+        $queue = rawurlencode($queue_name);
+        $url = "projects/{$this->project_id}/queues/$queue/subscribers";
+        $options = array(
+            'subscribers' => array($subscriber_hash)
+        );
+        return self::json_decode($this->apiCall(self::DELETE, $url, $options));
+    }
+
+
+    /* PRIVATE FUNCTIONS */
 
     private function setJsonHeaders(){
         $this->setCommonHeaders();
@@ -443,21 +476,6 @@ class IronMQ{
     private function setPostHeaders(){
         $this->setCommonHeaders();
         $this->headers['Content-Type'] ='multipart/form-data';
-    }
-
-    private function debug($var_name, $variable){
-        if ($this->debug_enabled){
-            echo "{$var_name}: ".var_export($variable,true)."\n";
-        }
-    }
-
-    private static function json_decode($response){
-        $data = json_decode($response);
-        $json_error = json_last_error();
-        if($json_error != JSON_ERROR_NONE) {
-            throw new JSON_Exception($json_error);
-        }
-        return $data;
     }
 
 }

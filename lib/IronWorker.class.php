@@ -5,95 +5,36 @@
  *
  * @link https://github.com/iron-io/iron_worker_php
  * @link http://www.iron.io/
- * @link http://docs.iron.io/
- * @version 1.0
+ * @link http://dev.iron.io/
+ * @version 1.3.7
  * @package IronWorkerPHP
  * @copyright Feel free to copy, steal, take credit for, or whatever you feel like doing with this code. ;)
  */
 
 /**
- * The Http_Exception class represents an HTTP response status that is not 200 OK.
+ * IronWorker internal exceptions representation
  */
-class Http_Exception extends Exception{
-    const NOT_MODIFIED = 304;
-    const BAD_REQUEST = 400;
-    const NOT_FOUND = 404;
-    const NOT_ALOWED = 405;
-    const CONFLICT = 409;
-    const PRECONDITION_FAILED = 412;
-    const INTERNAL_ERROR = 500;
-}
-
-/**
- * The JSON_Exception class represents an failures of decoding json strings.
- */
-class JSON_Exception extends Exception {
-    public $error = null;
-    public $error_code = JSON_ERROR_NONE;
-
-    function __construct($error_code) {
-        $this->error_code = $error_code;
-        switch($error_code) {
-            case JSON_ERROR_DEPTH:
-                $this->error = 'Maximum stack depth exceeded.';
-                break;
-            case JSON_ERROR_CTRL_CHAR:
-                $this->error = "Unexpected control characted found.";
-                break;
-            case JSON_ERROR_SYNTAX:
-                $this->error = "Syntax error, malformed JSON";
-                break;
-        }
-        parent::__construct();
-    }
-
-    function __toString() {
-        return $this->error;
-    }
-}
-
-
 class IronWorker_Exception extends Exception{
 
 }
 
-
 /**
  * Class that wraps IronWorker API calls.
  */
-class IronWorker{
+class IronWorker extends IronCore{
 
-    //Header Constants
-    const header_user_agent = "IronWorker PHP v0.1";
-    const header_accept = "application/json";
-    const header_accept_encoding = "gzip, deflate";
-    const HTTP_OK = 200;
-    const HTTP_CREATED = 201;
-    const HTTP_ACEPTED = 202;
-
-    const POST   = 'POST';
-    const GET    = 'GET';
-    const DELETE = 'DELETE';
-
-    public  $debug_enabled = false;
-
-    private $required_config_fields = array('token','project_id');
-    private $default_values = array(
-        'protocol'    => 'http',
+    protected $client_version = '1.3.7';
+    protected $client_name    = 'iron_worker_php';    
+    protected $product_name   = 'iron_worker';
+    protected $default_values = array(
+        'protocol'    => 'https',
         'host'        => 'worker-aws-us-east-1.iron.io',
-        'port'        => '80',
+        'port'        => '443',
         'api_version' => '2',
     );
 
-    private $url;
-    private $token;
-    private $api_version;
-    private $version;
-    private $project_id;
-    private $headers;
-
     /**
-     * @param string|array $config_file_or_options
+     * @param string|array|null $config_file_or_options
      *        Array of options or name of config file.
      * Fields in options array or in config:
      *
@@ -105,22 +46,50 @@ class IronWorker{
      * - host
      * - port
      * - api_version
+     *
+     * Configuration data will be searched in this locations:
+     * 1.  passed to class constructor
+     * 2a. config file iron.ini in current directory
+     * 2b. config file iron.json in current directory
+     * 3a. environment variables IRON_WORKER_TOKEN and others
+     * 3b. environment variables IRON_TOKEN and others
+     * 4a. config file ~/.iron.ini in user home dir
+     * 4b. config file ~/.iron.json in user home dir
+     *
      */
-    function __construct($config_file_or_options){
-        $config = $this->getConfigData($config_file_or_options);
-        $token              = $config['token'];
-        $project_id         = $config['project_id'];
+    function __construct($config_file_or_options = null){
+        $this->getConfigData($config_file_or_options);
+        $this->url = "{$this->protocol}://{$this->host}:{$this->port}/{$this->api_version}/";
+    }
 
-        $protocol           = empty($config['protocol'])   ? $this->default_values['protocol']    : $config['protocol'];
-        $host               = empty($config['host'])       ? $this->default_values['host']        : $config['host'];
-        $port               = empty($config['port'])       ? $this->default_values['port']        : $config['port'];
-        $api_version        = empty($config['api_version'])? $this->default_values['api_version'] : $config['api_version'];
-
-        $this->url          = "$protocol://$host:$port/$api_version/";
-        $this->token        = $token;
-        $this->api_version  = $api_version;
-        $this->version      = $api_version;
-        $this->project_id   = $project_id;
+    /**
+     * Zips and uploads your code
+     *
+     * Shortcut for zipDirectory() + postCode()
+     *
+     * @param string $directory Directory with worker files
+     * @param string $run_filename This file will be launched as worker
+     * @param string $code_name Referenceable (unique) name for your worker
+     * @param array $options Optional parameters:
+     *  - "max_concurrency" The maximum number of tasks that should be run in parallel.
+     *  - "retries" The number of auto-retries of failed task.
+     *  - "retries_delay" Delay in seconds between retries.
+     * @return bool Result of operation
+     * @throws Exception
+     */
+    public function upload($directory, $run_filename, $code_name, $options = array()){
+        $temp_file = tempnam(sys_get_temp_dir(), 'iron_worker_php');
+        if (!self::zipDirectory($directory, $temp_file, true)){
+            unlink($temp_file);
+            return false;
+        }
+        try{
+            $this->postCode($run_filename, $temp_file, $code_name, $options);
+        }catch(Exception $e){
+            unlink($temp_file);
+            throw $e;
+        }
+        return true;
     }
 
     /**
@@ -210,10 +179,26 @@ class IronWorker{
         return $projects->projects;
     }
 
-    public function getTasks(){
+    /**
+     * List Tasks
+     *
+     * @param int $page Page. Default is 0, maximum is 100.
+     * @param int $per_page The number of tasks to return per page. Default is 30, maximum is 100.
+     * @param array $options Optional URL Parameters
+     * Filter by Status: the parameters queued, running, complete, error, cancelled, killed, and timeout will all filter by their respective status when given a value of 1. These parameters can be mixed and matched to return tasks that fall into any of the status filters. If no filters are provided, tasks will be displayed across all statuses.
+     * - "from_time" Limit the retrieved tasks to only those that were created after the time specified in the value. Time should be formatted as the number of seconds since the Unix epoch.
+     * - "to_time" Limit the retrieved tasks to only those that were created before the time specified in the value. Time should be formatted as the number of seconds since the Unix epoch.
+     * @return mixed
+     */
+    public function getTasks($page = 0, $per_page = 30, $options = array()){
         $url = "projects/{$this->project_id}/tasks";
         $this->setJsonHeaders();
-        $task = self::json_decode($this->apiCall(self::GET, $url));
+        $params = array(
+            'page'     => $page,
+            'per_page' => $per_page
+        );
+        $params = array_merge($options, $params);
+        $task = self::json_decode($this->apiCall(self::GET, $url, $params));
         return $task->tasks;
     }
 
@@ -223,10 +208,14 @@ class IronWorker{
         return json_decode($this->apiCall(self::GET, $url));
     }
 
-    public function getCodes(){
-        $this->setJsonHeaders();
+    public function getCodes($page = 0, $per_page = 30){
         $url = "projects/{$this->project_id}/codes";
-        $codes = self::json_decode($this->apiCall(self::GET, $url));
+        $this->setJsonHeaders();
+        $params = array(
+            'page'     => $page,
+            'per_page' => $per_page
+        );
+        $codes = self::json_decode($this->apiCall(self::GET, $url, $params));
         return $codes->codes;
     }
 
@@ -245,29 +234,34 @@ class IronWorker{
      * @param string $filename This file will be launched as worker
      * @param string $zipFilename zip file containing code to execute
      * @param string $name referenceable (unique) name for your worker
+     * @param array $options Optional parameters:
+     *  - "max_concurrency" The maximum number of tasks that should be run in parallel.
+     *  - "retries" The number of auto-retries of failed task.
+     *  - "retries_delay" Delay in seconds between retries.
      * @return mixed
      */
-    public function postCode($filename, $zipFilename, $name){
+    public function postCode($filename, $zipFilename, $name, $options = array()){
 
         // Add IronWorker functions to the uploaded worker
-        $this->addHeaderToArchive($zipFilename, $filename);
+        $this->addRunnerToArchive($zipFilename, $filename);
 
         $this->setPostHeaders();
         $ts = time();
         $runtime_type = $this->runtimeFileType($filename);
         $sendingData = array(
-            "code_name" => $name,
-            "name" => $name,
+            "code_name"  => $name,
+            "name"       => $name,
             "standalone" => True,
-            "runtime" => $runtime_type,
-            "file_name" => $filename,
-            "version" => $this->version,
-            "timestamp" => $ts,
-            "oauth" => $this->token,
+            "runtime"    => $runtime_type,
+            "file_name"  => "runner.php",
+            "version"    => $this->version,
+            "timestamp"  => $ts,
+            "oauth"      => $this->token,
             "class_name" => $name,
-            "options" => array(),
+            "options"    => array(),
             "access_key" => $name
         );
+        $sendingData = array_merge($sendingData, $options);
         $url = "projects/{$this->project_id}/codes";
         $post = array(
             "data" => json_encode($sendingData),
@@ -289,18 +283,24 @@ class IronWorker{
             'schedule_id' => $schedule_id
         );
 
-        return $this->apiCall(self::POST, $url, $request);
+        return self::json_decode($this->apiCall(self::POST, $url, $request));
     }
 
     /**
      * Get information about all schedules for project
      *
+     * @param int $page
+     * @param int $per_page
      * @return mixed
      */
-    public function getSchedules(){
-        $this->setJsonHeaders();
+    public function getSchedules($page = 0, $per_page = 30){
         $url = "projects/{$this->project_id}/schedules";
-        $schedules = self::json_decode($this->apiCall(self::GET, $url));
+        $this->setJsonHeaders();
+        $params = array(
+            'page'     => $page,
+            'per_page' => $per_page
+        );
+        $schedules = self::json_decode($this->apiCall(self::GET, $url, $params));
         return $schedules->schedules;
     }
 
@@ -336,13 +336,13 @@ class IronWorker{
     /**
      * Schedules task
      *
-     * @param string $name Package name
-     * @param array $payload Payload for task
-     * @param int $start_at Time of first run in unix timestamp format. Example: time()+2*60
-     * @param int $run_every Time in seconds between runs. If omitted, task will only run once.
-     * @param int $end_at Time tasks will stop being enqueued in unix timestamp format.
-     * @param int $run_times Number of times to run task.
-     * @param int $priority Priority queue to run the job in (0, 1, 2). p0 is default.
+     * @param string        $name       Package name
+     * @param array         $payload    Payload for task
+     * @param int|DateTime  $start_at   Time of first run in unix timestamp format or as DateTime instance. Example: time()+2*60
+     * @param int           $run_every  Time in seconds between runs. If omitted, task will only run once.
+     * @param int|DateTime  $end_at     Time tasks will stop being enqueued in unix timestamp or as DateTime instance format.
+     * @param int           $run_times  Number of times to run task.
+     * @param int           $priority   Priority queue to run the job in (0, 1, 2). p0 is default.
      * @return string Created Schedule id
      */
     public function postScheduleAdvanced($name, $payload = array(), $start_at, $run_every = null, $end_at = null, $run_times = null, $priority = null){
@@ -439,23 +439,34 @@ class IronWorker{
         return $this->cancelTask($task_id);
     }
 
-    public function setTaskProgress($task_id, $percent, $msg = ''){
-        if (empty($task_id)){
-            throw new InvalidArgumentException("Please set task_id");
-        }
-        $url = "projects/{$this->project_id}/tasks/$task_id/progress";
-        $request = array(
-            'percent' => $percent,
-            'msg'     => $msg
-        );
+    /**
+     * Wait while the task specified by task_id executes
+     *
+     * @param string $task_id Task ID
+     * @param int $sleep Delay between API invocations in seconds
+     * @param int $max_wait_time Maximum waiting time in seconds, 0 for infinity
+     * @return mixed $details Task details or false
+     */
+    public function waitFor($task_id, $sleep = 5, $max_wait_time = 0){
+        while(1){
+            $details = $this->getTaskDetails($task_id);
 
-        $this->setCommonHeaders();
-        return self::json_decode($this->apiCall(self::POST, $url, $request));
+            if ($details->status != 'queued' && $details->status != 'running'){
+                return $details;
+            }
+            if ($max_wait_time > 0){
+                $max_wait_time -= $sleep;
+                if ($max_wait_time <= 0) return false;
+            }
+
+            sleep($sleep);
+        }
+        return false;
     }
 
-    /* PRIVATE FUNCTIONS */
 
     /**
+     * Schedule a task
      *
      * @param string $name
      * @param array $options options contain:
@@ -467,7 +478,7 @@ class IronWorker{
      * @param array $payload
      * @return mixed
      */
-    private function postSchedule($name, $options, $payload = array()){
+    public function postSchedule($name, $options, $payload = array()){
         $url = "projects/{$this->project_id}/schedules";
         $shedule = array(
            'name' => $name,
@@ -486,19 +497,76 @@ class IronWorker{
         return $shedules->schedules[0]->id;
     }
 
-    private function compiledHeaders(){
-
-        # Set default headers if no headers set.
-        if ($this->headers == null){
-            $this->setCommonHeaders();
+    /**
+     * Set a Task’s Progress
+     *
+     * Example (inside a worker):
+     * <code>
+     * require_once "phar://iron_worker.phar";
+     * $worker = new IronWorker(); # assuming you have iron.json inside a worker
+     * $args = getArgs();
+     * $task_id = $args['task_id'];
+     * $worker->setProgress($task_id, 50, "Task is half-done");
+     * </code>
+     *
+     * @param string $task_id Task ID
+     * @param int $percent An integer, between 0 and 100 inclusive, that describes the completion of the task.
+     * @param string $msg Any message or data describing the completion of the task. Must be a string value, and the 64KB request limit applies.
+     * @return mixed
+     * @throws InvalidArgumentException
+     */
+    public function setProgress($task_id, $percent, $msg = ''){
+        if (empty($task_id)){
+            throw new InvalidArgumentException("Please set task_id");
         }
+        $url = "projects/{$this->project_id}/tasks/$task_id/progress";
+        $request = array(
+            'percent' => $percent,
+            'msg'     => $msg
+        );
 
-        $headers = array();
-        foreach ($this->headers as $k => $v){
-            $headers[] = "$k: $v";
-        }
-        return $headers;
+        $this->setCommonHeaders();
+        $res = $this->apiCall(self::POST, $url, $request);
+        return self::json_decode($res);
     }
+
+    /**
+     * Alias for setProgress()
+     *
+     * @param string $task_id Task ID
+     * @param int $percent
+     * @param string $msg
+     * @return mixed
+     */
+    public function setTaskProgress($task_id, $percent, $msg = ''){
+        return $this->setProgress($task_id, $percent, $msg);
+    }
+
+    /**
+     * Set a Task’s Progress. Work only inside a worker
+     *
+     * Example (inside a worker):
+     * <code>
+     * require_once "phar://iron_worker.phar";
+     * $worker = new IronWorker(); # assuming you have iron.json inside a worker
+     * $worker->setCurrentTaskProgress(50, "Task is half-done");
+     * </code>
+     * @param int $percent An integer, between 0 and 100 inclusive, that describes the completion of the task.
+     * @param string $msg Any message or data describing the completion of the task. Must be a string value, and the 64KB request limit applies.
+     * @return mixed
+     * @throws RuntimeException
+     */
+    public function setCurrentTaskProgress($percent, $msg = ''){
+        if (!function_exists('getArgs')){
+            throw new RuntimeException("Method can be used only inside a worker");
+        }
+        $args = getArgs();
+        $task_id = $args['task_id'];
+
+        return $this->setProgress($task_id, $percent, $msg);
+    }
+
+    /* PRIVATE FUNCTIONS */
 
     private function runtimeFileType($name) {
         if(empty($name)){
@@ -519,96 +587,8 @@ class IronWorker{
         }
     }
 
-    private function apiCall($type, $url, $params = array(), $raw_post_data = null){
-        $url = "{$this->url}$url";
-
-        $s = curl_init();
-        if (! isset($params['oauth'])) {
-          $params['oauth'] = $this->token;
-        }
-        switch ($type) {
-            case self::DELETE:
-                $fullUrl = $url . '?' . http_build_query($params);
-                $this->debug('apiCall fullUrl', $fullUrl);
-                curl_setopt($s, CURLOPT_URL, $fullUrl);
-                curl_setopt($s, CURLOPT_CUSTOMREQUEST, self::DELETE);
-                break;
-            case self::POST:
-                $this->debug('apiCall url', $url);
-                curl_setopt($s, CURLOPT_URL,  $url);
-                curl_setopt($s, CURLOPT_POST, true);
-                if ($raw_post_data){
-                    curl_setopt($s, CURLOPT_POSTFIELDS, $raw_post_data);
-                }else{
-                    curl_setopt($s, CURLOPT_POSTFIELDS, json_encode($params));
-                }
-                break;
-            case self::GET:
-                $fullUrl = $url . '?' . http_build_query($params);
-                $this->debug('apiCall fullUrl', $fullUrl);
-                curl_setopt($s, CURLOPT_URL, $fullUrl);
-                break;
-        }
-
-        curl_setopt($s, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($s, CURLOPT_HTTPHEADER, $this->compiledHeaders());
-        $_out = curl_exec($s);
-        $status = curl_getinfo($s, CURLINFO_HTTP_CODE);
-        curl_close($s);
-        switch ($status) {
-            case self::HTTP_OK:
-            case self::HTTP_CREATED:
-            case self::HTTP_ACEPTED:
-                $out = $_out;
-                break;
-            default:
-                throw new Http_Exception("http error: {$status} | {$_out}", $status);
-        }
-        return $out;
-    }
-
-
-    /**
-     * @param array|string $config_file_or_options
-     * array of options or name of config file
-     * @return array
-     * @throws InvalidArgumentException
-     */
-    private function getConfigData($config_file_or_options){
-        if (is_string($config_file_or_options)){
-            $ini = parse_ini_file($config_file_or_options, true);
-            if ($ini === false){
-                throw new InvalidArgumentException("Config file $config_file_or_options not found");
-            }
-            if (empty($ini['iron_worker'])){
-                throw new InvalidArgumentException("Config file $config_file_or_options has no section 'iron_worker'");
-            }
-            $config =  $ini['iron_worker'];
-        }elseif(is_array($config_file_or_options)){
-            $config = $config_file_or_options;
-        }else{
-            throw new InvalidArgumentException("Wrong parameter type");
-        }
-        foreach ($this->required_config_fields as $field){
-            if (empty($config[$field])){
-                throw new InvalidArgumentException("Required config key missing: '$field'");
-            }
-        }
-        return $config;
-    }
-
     private function getFileContent($filename){
         return file_get_contents($filename);
-    }
-
-    private function setCommonHeaders(){
-        $this->headers = array(
-            'Authorization'   => "OAuth {$this->token}",
-            'User-Agent'      => self::header_user_agent,
-            'Content-Type'    => 'application/json',
-            'Accept'          => self::header_accept,
-            'Accept-Encoding' => self::header_accept_encoding
-        );
     }
 
     private function setJsonHeaders(){
@@ -618,12 +598,6 @@ class IronWorker{
     private function setPostHeaders(){
         $this->setCommonHeaders();
         $this->headers['Content-Type'] ='multipart/form-data';
-    }
-
-    private function debug($var_name, $variable){
-        if ($this->debug_enabled){
-            echo "{$var_name}: ".var_export($variable,true)."\n";
-        }
     }
 
     private static function fileNamesRecursive($dir, $base_dir = ''){
@@ -645,111 +619,64 @@ class IronWorker{
         return $names;
     }
 
-    private static function dateRfc3339($timestamp = 0) {
-
-        if (!$timestamp) {
-            $timestamp = time();
-        }
-        $date = date('Y-m-d\TH:i:s', $timestamp);
-
-        $matches = array();
-        if (preg_match('/^([\-+])(\d{2})(\d{2})$/', date('O', $timestamp), $matches)) {
-            $date .= $matches[1].$matches[2].':'.$matches[3];
-        } else {
-            $date .= 'Z';
-        }
-        return $date;
-    }
-
-    private static function json_decode($response){
-        $data = json_decode($response);
-        $json_error = json_last_error();
-        if($json_error != JSON_ERROR_NONE) {
-            throw new JSON_Exception($json_error);
-        }
-        return $data;
-    }
-
 
     /**
      * Contain php code that adds to worker before upload
      *
+     * @param string $worker_file_name
      * @return string
      */
-    private function workerHeader(){
-        $header = <<<'EOL'
+    private function workerHeader($worker_file_name){
+        $header = <<<EOL
         <?php
         /*IRON_WORKER_HEADER*/
         function getArgs(){
-            global $argv;
-            $args = array('task_id' => null, 'dir' => null, 'payload' => array());
-            foreach($argv as $k => $v){
-                if (empty($argv[$k+1])) continue;
-                if ($v == '-id') $args['task_id'] = $argv[$k+1];
-                if ($v == '-d')  $args['dir']     = $argv[$k+1];
-                if ($v == '-payload' && file_exists($argv[$k+1])){
-                    $args['payload'] = json_decode(file_get_contents($argv[$k+1]));
+            global \$argv;
+            \$args = array('task_id' => null, 'dir' => null, 'payload' => array());
+            foreach(\$argv as \$k => \$v){
+                if (empty(\$argv[\$k+1])) continue;
+                if (\$v == '-id') \$args['task_id'] = \$argv[\$k+1];
+                if (\$v == '-d')  \$args['dir']     = \$argv[\$k+1];
+                if (\$v == '-payload' && file_exists(\$argv[\$k+1])){
+                    \$args['payload'] = file_get_contents(\$argv[\$k + 1]);
+                    \$parsed_payload = json_decode(\$args['payload']);
+                    if (\$parsed_payload != null) {
+                        \$args['payload'] = \$parsed_payload;
+                    }
                 }
             }
-            return $args;
+            return \$args;
         }
 
         function getPayload(){
-            $args = getArgs();
-            return $args['payload'];
+            \$args = getArgs();
+            return \$args['payload'];
         }
 
-        function setProgress($percent, $msg = ''){
-            $args = getArgs();
-            $task_id = $args['task_id'];
-            $base_url   = '[URL]';
-            $project_id = '[PROJECT_ID]';
-            $headers    =  [HEADERS];
-
-            $url = "{$base_url}projects/$project_id/tasks/$task_id/progress";
-            $params = array(
-                'percent' => $percent,
-                'msg'     => $msg
-            );
-
-            $s = curl_init();
-            curl_setopt($s, CURLOPT_URL,  $url);
-            curl_setopt($s, CURLOPT_POST, true);
-            curl_setopt($s, CURLOPT_POSTFIELDS, json_encode($params));
-            curl_setopt($s, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($s, CURLOPT_HTTPHEADER, $headers);
-            $out = curl_exec($s);
-            curl_close($s);
-            return json_decode($out);
-        }
-
-        ?>
+        require dirname(__FILE__)."/[SCRIPT]";
 EOL;
         $header = str_replace(
-            array('[PROJECT_ID]','[URL]','[HEADERS]'),
-            array($this->project_id, $this->url, var_export($this->compiledHeaders(), true)),
+            array('[PROJECT_ID]','[URL]','[HEADERS]','[SCRIPT]'),
+            array($this->project_id, $this->url, var_export($this->compiledHeaders(), true), $worker_file_name),
             $header
         );
         return trim($header," \n\r");
     }
 
-    private function addHeaderToArchive($archive, $worker_file_name){
+    private function addRunnerToArchive($archive, $worker_file_name){
         $zip = new ZipArchive;
-        if (!$zip->open($archive) === true) {
+        if (!$zip->open($archive, ZIPARCHIVE::CREATE) === true) {
             $zip->close();
-            throw new IronWorker_Exception("Archive $archive not found!");
+            throw new IronWorker_Exception("Archive $archive was not found!");
         }
 
-        if (! $worker_content = $zip->getFromName($worker_file_name)){
+        if ($zip->statName($worker_file_name) === false){
             $zip->close();
-            throw new IronWorker_Exception("File $worker_file_name in archive $archive not found!");
+            throw new IronWorker_Exception("File $worker_file_name in archive $archive was not found!");
         }
 
-        if (strpos($worker_content, '/*IRON_WORKER_HEADER*/') === false){
-            // add header
-            if (!$zip->addFromString($worker_file_name, $this->workerHeader().$worker_content)){
-                throw new IronWorker_Exception("Adding Header to the worker failed");
-            }
+        if (!$zip->addFromString('runner.php', $this->workerHeader($worker_file_name))){
+            throw new IronWorker_Exception("Adding Runner to the worker failed");
         }
 
         $zip->close();

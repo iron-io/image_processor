@@ -180,7 +180,7 @@ $ironmq->postMessage("input_queue",
   </section>
   
   <footer>
-    <a href="http://iron.io" title="Messaging and Background Processing for Cloud Apps"><img src="http://www.iron.io/assets/resources/ironio-badge-red.png" alt="Iron.io Badge" /></a>      
+    <a href="http://iron.io" title="Messaging and Background Processing for Cloud Apps"><img src="https://hud.iron.io/assets/ironio-logo-white.svg" alt="Iron.io Badge" /></a>
   </footer>
 
 <script>
